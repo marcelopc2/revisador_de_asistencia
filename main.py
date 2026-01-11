@@ -413,7 +413,7 @@ uploaded = st.file_uploader("CSV de asistencia", type=["csv"])
 # with c4:
 #     strong_threshold = st.slider("Match fuerte (auto)", 0.80, 0.98, 0.86, 0.01)
 
-process = st.button("Procesar", type="primary", use_container_width=True)
+process = st.button("Procesar", type="primary", width='stretch')
 
 if process:
     if not course_id.strip():
@@ -516,7 +516,7 @@ if process:
                     # "CSV_email": pemail,
                     "status": "MATCHED",
                     "matched_student": m["best_name"],
-                    "score": round(m["best_score"], 3),
+                    "Puntaje de match": round(m["best_score"], 3),
                     "rule": m.get("rule", ""),
                     "top5": top5_fmt
                 })
@@ -548,7 +548,7 @@ if process:
                     # "CSV_email": pemail,
                     "status": "NOT_FOUND",
                     "matched_student": None,
-                    "score": round(m["best_score"], 3),
+                    "Puntaje match": round(m["best_score"], 3),
                     "rule": m.get("rule", ""),
                     "Top 5 posibles match": top5_fmt
                 })
@@ -571,7 +571,7 @@ if process:
             return "background-color: #c6efce; color: #006100; font-weight: 800; text-align: center;"
         return "background-color: #ffc7ce; color: #9c0006; font-weight: 800; text-align: center;"
 
-    styled = result.style.applymap(style_attendance, subset=["Asistencia"])
+    styled = result.style.map(style_attendance, subset=["Asistencia"])
 
     st.success(
         f"Matriculados: {len(result)} | Presentes (P): {sum(result['Asistencia']=='P')} | "
@@ -580,14 +580,14 @@ if process:
     )
 
     st.subheader("📋 Tabla resultados asistencia")
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.dataframe(styled, width='stretch', hide_index=True)
 
     # st.download_button(
     #     "Descargar tabla (CSV)",
     #     result.to_csv(index=False).encode("utf-8"),
     #     file_name=f"asistencia_curso_{course_id}.csv",
     #     mime="text/csv",
-    #     use_container_width=True
+    #     width='stretch'
     # )
 
     # =========================
@@ -597,10 +597,10 @@ if process:
     # st.subheader("🧪 Resumen de razonamiento")
 
     st.markdown("##### ⚠️ Ambiguos (No se pusieron presentes)")
-    st.dataframe(pd.DataFrame(ambiguous_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(ambiguous_rows), width='stretch', hide_index=True)
 
     st.markdown("##### ❌ No encontrados")
-    st.dataframe(pd.DataFrame(not_found_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(not_found_rows), width='stretch', hide_index=True)
 
     st.markdown("##### ✅ Con quien fueron emparejados")
     df_matched = pd.DataFrame([r for r in debug_rows if r.get("status") == "MATCHED"])
@@ -610,7 +610,7 @@ if process:
             "matched_student": "Match",
             "top5": "Top 5 posibles match"
         })
-    st.dataframe(df_matched, use_container_width=True, hide_index=True)
+    st.dataframe(df_matched, width='stretch', hide_index=True)
 
     # st.markdown("### 🔎 Todo procesado")
-    # st.dataframe(pd.DataFrame(debug_rows), use_container_width=True, hide_index=True)
+    # st.dataframe(pd.DataFrame(debug_rows), width='stretch', hide_index=True)
