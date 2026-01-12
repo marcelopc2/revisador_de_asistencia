@@ -57,6 +57,27 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+st.markdown(
+    """
+    <style>
+    /* Oculta badge de perfil (foto + "Creado por...") */
+    div[data-testid="stToolbar"] {visibility: hidden;}
+    div[data-testid="stDecoration"] {visibility: hidden;}
+    div[data-testid="stStatusWidget"] {visibility: hidden;}
+    section[data-testid="stSidebar"] + div div[data-testid="stToolbar"] {visibility: hidden;}
+
+    /* Oculta menú y footer clásico */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    /* Oculta cualquier link a GitHub */
+    a[href*="github.com"] {display: none !important;}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # =========================
 # Canvas config
 # =========================
