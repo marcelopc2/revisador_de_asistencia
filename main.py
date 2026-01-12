@@ -17,6 +17,17 @@ st.set_page_config(
     page_icon="🧑🏻‍💻"
 )
 
+st.markdown(
+    """
+    <style>
+    a[href*="github.com"] {
+        display: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # =========================
 # Canvas config
 # =========================
