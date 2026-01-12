@@ -53,19 +53,14 @@ st.markdown(
 st.markdown(
     """
     <style>
-    /* Oculta badge de perfil (foto + "Creado por...") */
-    div[data-testid="stToolbar"] {visibility: hidden;}
-    div[data-testid="stDecoration"] {visibility: hidden;}
-    div[data-testid="stStatusWidget"] {visibility: hidden;}
-    section[data-testid="stSidebar"] + div div[data-testid="stToolbar"] {visibility: hidden;}
+    /* Oculta el avatar "Creado por" (Streamlit Cloud profile badge) */
+    [data-testid="appCreatorAvatar"] { display: none !important; }
+    /* Oculta el contenedor completo (por si queda espacio/click) */
+    div:has(> div > a > img[data-testid="appCreatorAvatar"]) { display: none !important; }
 
-    /* Oculta menú y footer clásico */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-
-    /* Oculta cualquier link a GitHub */
-    a[href*="github.com"] {display: none !important;}
+    /* Alternativa adicional: por clase (según tu inspector) */
+    ._profileContainer_gzau3_53 { display: none !important; }
+    ._profilePreview_gzau3_63 { display: none !important; }
     </style>
     """,
     unsafe_allow_html=True
