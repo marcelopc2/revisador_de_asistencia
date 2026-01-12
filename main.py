@@ -28,6 +28,28 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+st.markdown(
+    """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    a[href*="github.com"] {display: none !important;}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # =========================
 # Canvas config
 # =========================
