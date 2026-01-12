@@ -53,14 +53,21 @@ st.markdown(
 st.markdown(
     """
     <style>
-    /* Oculta el avatar "Creado por" (Streamlit Cloud profile badge) */
-    [data-testid="appCreatorAvatar"] { display: none !important; }
-    /* Oculta el contenedor completo (por si queda espacio/click) */
-    div:has(> div > a > img[data-testid="appCreatorAvatar"]) { display: none !important; }
-
-    /* Alternativa adicional: por clase (según tu inspector) */
-    ._profileContainer_gzau3_53 { display: none !important; }
-    ._profilePreview_gzau3_63 { display: none !important; }
+    /* Mata el bloque exacto del badge */
+    div._profilePreview_gzau3_63 { 
+        display: none !important; 
+        visibility: hidden !important;
+        height: 0 !important;
+        width: 0 !important;
+        overflow: hidden !important;
+    }
+    div._profileContainer_gzau3_53 {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        width: 0 !important;
+        overflow: hidden !important;
+    }
     </style>
     """,
     unsafe_allow_html=True
