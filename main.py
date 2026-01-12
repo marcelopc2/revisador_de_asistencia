@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from collections import Counter
 from itertools import combinations
 from decouple import config
+import streamlit.components.v1 as components
 
 # =========================
 # Streamlit config
@@ -71,6 +72,31 @@ st.markdown(
     </style>
     """,
     unsafe_allow_html=True
+)
+
+components.html(
+    """
+    <script>
+    const kill = () => {
+      const preview = parent.document.querySelector('div._profilePreview_gzau3_63');
+      if (preview) preview.style.display = 'none';
+
+      const container = parent.document.querySelector('div._profileContainer_gzau3_53');
+      if (container) container.style.display = 'none';
+
+      const avatar = parent.document.querySelector('[data-testid="appCreatorAvatar"]');
+      if (avatar) {
+        // por si cambian las clases, oculta el ancestro clickeable
+        let node = avatar;
+        for (let i = 0; i < 6; i++) node = node.parentElement || node;
+        node.style.display = 'none';
+      }
+    };
+    kill();
+    setInterval(kill, 500);
+    </script>
+    """,
+    height=0
 )
 
 # =========================
