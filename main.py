@@ -50,6 +50,13 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+st.markdown(
+    "<div style='text-align:center; color:#888; font-size:12px;'>"
+    "Sistema interno – Dirección Académica de Postgrado"
+    "</div>",
+    unsafe_allow_html=True
+)
+
 # =========================
 # Canvas config
 # =========================
