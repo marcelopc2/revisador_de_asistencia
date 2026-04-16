@@ -7,7 +7,6 @@ from difflib import SequenceMatcher
 from collections import Counter
 from itertools import combinations
 from decouple import config
-import streamlit.components.v1 as components
 
 # =========================
 # Streamlit config
@@ -49,54 +48,6 @@ st.markdown(
     </style>
     """,
     unsafe_allow_html=True
-)
-
-st.markdown(
-    """
-    <style>
-    /* Mata el bloque exacto del badge */
-    div._profilePreview_gzau3_63 { 
-        display: none !important; 
-        visibility: hidden !important;
-        height: 0 !important;
-        width: 0 !important;
-        overflow: hidden !important;
-    }
-    div._profileContainer_gzau3_53 {
-        display: none !important;
-        visibility: hidden !important;
-        height: 0 !important;
-        width: 0 !important;
-        overflow: hidden !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-components.html(
-    """
-    <script>
-    const kill = () => {
-      const preview = parent.document.querySelector('div._profilePreview_gzau3_63');
-      if (preview) preview.style.display = 'none';
-
-      const container = parent.document.querySelector('div._profileContainer_gzau3_53');
-      if (container) container.style.display = 'none';
-
-      const avatar = parent.document.querySelector('[data-testid="appCreatorAvatar"]');
-      if (avatar) {
-        // por si cambian las clases, oculta el ancestro clickeable
-        let node = avatar;
-        for (let i = 0; i < 6; i++) node = node.parentElement || node;
-        node.style.display = 'none';
-      }
-    };
-    kill();
-    setInterval(kill, 500);
-    </script>
-    """,
-    height=0
 )
 
 # =========================
@@ -474,11 +425,110 @@ def match_participant(participant_name: str, participant_email: str, students_df
     return {"status": status, "best_id": best[1], "best_name": best[2], "best_score": float(best_score), "candidates": top5, "rule": "fuzzy"}
 
 # =========================
+# Canvas: actividad en plataforma
+# =========================
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_student_activity(course_id: str) -> pd.DataFrame:
+    with requests.Session() as session:
+        payload = {
+            "type[]": ["StudentEnrollment"],
+            "state[]": ["active"],
+            "per_page": 100,
+            "include[]": ["user"],
+        }
+        data = canvas_request(session, "GET", f"/courses/{course_id}/enrollments", payload=payload, paginated=True)
+        if data is None:
+            return pd.DataFrame()
+
+    rows = []
+    for enr in data:
+        user = enr.get("user") or {}
+        uid = user.get("id")
+        last_activity = enr.get("last_activity_at")
+        total_secs = enr.get("total_activity_time")
+
+        if total_secs is not None:
+            h = total_secs // 3600
+            m = (total_secs % 3600) // 60
+            s = total_secs % 60
+            activity_fmt = f"{h:02}:{m:02}:{s:02}"
+        else:
+            activity_fmt = "00:00:00"
+
+        rows.append({
+            "canvas_user_id": uid,
+            "Ha participado": "✔️" if last_activity else "❌",
+            "Tiempo en plataforma": activity_fmt,
+        })
+
+    return pd.DataFrame(rows)
+
+
+# =========================
+# Canvas: tareas y entregas
+# =========================
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_course_assignments(course_id: str) -> list:
+    with requests.Session() as session:
+        data = canvas_request(session, "GET", f"/courses/{course_id}/assignments",
+                              payload={"per_page": 100}, paginated=True)
+    return data or []
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_assignment_submitters(course_id: str, assignment_id: int) -> frozenset:
+    with requests.Session() as session:
+        data = canvas_request(session, "GET",
+                              f"/courses/{course_id}/assignments/{assignment_id}/submissions",
+                              payload={"per_page": 100}, paginated=True)
+    if not data:
+        return frozenset()
+
+    submitted = set()
+    for s in data:
+        wfs = s.get("workflow_state")
+        grd = s.get("grade")
+        if wfs in ("submitted", "graded"):
+            if grd is not None:
+                try:
+                    if float(grd) > 0:
+                        submitted.add(s["user_id"])
+                except Exception:
+                    submitted.add(s["user_id"])
+            else:
+                submitted.add(s["user_id"])
+    return frozenset(submitted)
+
+
+def find_assignment_by_keywords(assignments: list, keywords: list, exclude: list = None) -> dict | None:
+    """Devuelve la primera tarea cuyo nombre normalizado contiene todas las keywords y ninguna de las exclude."""
+    def norm(s: str) -> str:
+        s = unicodedata.normalize("NFD", s)
+        s = re.sub(r"[\u0300-\u036f]", "", s)
+        return s.lower()
+
+    for a in assignments:
+        name_norm = norm(a.get("name", ""))
+        if all(kw in name_norm for kw in keywords):
+            if exclude and any(ex in name_norm for ex in exclude):
+                continue
+            return a
+    return None
+
+
+# =========================
 # UI
 # =========================
 # st.title("🧑🏻‍💻 Revisador de asistencia semi automático")
 st.markdown("#### 🧑🏻‍💻 Revisador de asistencia semi automático")
-st.info("Esta herramienta te ayuda a comparar un CSV de asistencia contra los estudiantes matriculados en un curso de Canvas. Dandote una tabla que puedes copiar facilmente en Excel (ctrl+shift+v para respetar formato)")
+st.info(
+    "**¿Cómo usar?**\n\n"
+    "1. Ingresa el **ID del curso** en Canvas.\n"
+    "2. Sube el **CSV de asistencia** (exportado desde Zoom u otra plataforma).\n"
+    "3. Presiona **Procesar** — la app cruza los nombres automáticamente y genera la tabla con **P** (presente) y **A** (ausente).\n\n"
+    "💡 Activa **Solo asistencia** si quieres el resultado más rápido. "
+    "La tabla se puede copiar directo a Excel con **Ctrl+Shift+V** para mantener el formato."
+)
 
 # c1, c2 = st.columns([2, 3])
 # with c1:
@@ -495,6 +545,7 @@ uploaded = st.file_uploader("CSV de asistencia", type=["csv"])
 # with c4:
 #     strong_threshold = st.slider("Match fuerte (auto)", 0.80, 0.98, 0.86, 0.01)
 
+solo_asistencia = st.checkbox("Solo asistencia (más rápido)", value=False)
 process = st.button("Procesar", type="primary", width='stretch')
 
 if process:
@@ -648,12 +699,57 @@ if process:
         "Asistencia": "Asistencia"
     })
 
+    # =========================
+    # Columnas extendidas: participación en plataforma y tareas
+    # =========================
+    if not solo_asistencia:
+        with st.spinner("Obteniendo datos de actividad y tareas del curso..."):
+            activity_df      = fetch_student_activity(course_id.strip())
+            assignments_list = fetch_course_assignments(course_id.strip())
+
+            a_foro   = find_assignment_by_keywords(assignments_list, ["foro"])
+            a_equipo = find_assignment_by_keywords(assignments_list, ["equipo"])
+            a_final  = find_assignment_by_keywords(assignments_list, ["final"], exclude=["equipo"])
+
+            foro_ids   = fetch_assignment_submitters(course_id.strip(), a_foro["id"])   if a_foro   else frozenset()
+            equipo_ids = fetch_assignment_submitters(course_id.strip(), a_equipo["id"]) if a_equipo else frozenset()
+            final_ids  = fetch_assignment_submitters(course_id.strip(), a_final["id"])  if a_final  else frozenset()
+
+        uid_act = {}
+        if not activity_df.empty:
+            uid_act = activity_df.set_index("canvas_user_id")[["Ha participado", "Tiempo en plataforma"]].to_dict("index")
+
+        ext_rows = []
+        for _, row in students_df.iterrows():
+            uid = int(row["canvas_user_id"])
+            act = uid_act.get(uid, {})
+            ext_rows.append({
+                "Nombre alumno":        row["sortable_name"],
+                "Ha participado":       act.get("Ha participado", "❌"),
+                "Tiempo en plataforma": act.get("Tiempo en plataforma", "00:00:00"),
+                "Foro académico":       "✔️" if uid in foro_ids   else "❌",
+                "Trabajo en equipo":    "✔️" if uid in equipo_ids else "❌",
+                "Trabajo final":        "✔️" if uid in final_ids  else "❌",
+            })
+        ext_df = pd.DataFrame(ext_rows)
+        result = result.merge(ext_df, on="Nombre alumno", how="left")
+
     def style_attendance(val):
         if val == "P":
             return "background-color: #c6efce; color: #006100; font-weight: 800; text-align: center;"
         return "background-color: #ffc7ce; color: #9c0006; font-weight: 800; text-align: center;"
 
+    def style_bool(val):
+        if val == "✔️":
+            return "background-color: #c6efce; color: #006100; text-align: center;"
+        if val == "❌":
+            return "background-color: #ffc7ce; color: #9c0006; text-align: center;"
+        return ""
+
     styled = result.style.map(style_attendance, subset=["Asistencia"])
+    if not solo_asistencia:
+        bool_cols = ["Ha participado", "Foro académico", "Trabajo en equipo", "Trabajo final"]
+        styled = styled.map(style_bool, subset=bool_cols)
 
     st.success(
         f"Matriculados: {len(result)} | Presentes (P): {sum(result['Asistencia']=='P')} | "
