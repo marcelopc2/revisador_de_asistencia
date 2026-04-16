@@ -524,7 +524,7 @@ st.markdown("#### 🧑🏻‍💻 Revisador de asistencia semi automático")
 st.info(
     "**¿Cómo usar?**\n\n"
     "1. Ingresa el **ID del curso** en Canvas.\n"
-    "2. Sube el **CSV de asistencia** (exportado desde Zoom u otra plataforma).\n"
+    "2. Sube el **CSV de asistencia** (exportado desde Canvas/Zoom).\n"
     "3. Presiona **Procesar** — la app cruza los nombres automáticamente y genera la tabla con **P** (presente) y **A** (ausente).\n\n"
     "💡 Activa **Solo asistencia** si quieres el resultado más rápido. "
     "La tabla se puede copiar directo a Excel con **Ctrl+Shift+V** para mantener el formato."
