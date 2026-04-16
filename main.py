@@ -3,6 +3,9 @@ import pandas as pd
 import requests
 import re
 import unicodedata
+import sqlite3
+import hashlib
+from pathlib import Path
 from difflib import SequenceMatcher
 from collections import Counter
 from itertools import combinations
@@ -517,6 +520,46 @@ def find_assignment_by_keywords(assignments: list, keywords: list, exclude: list
 
 
 # =========================
+# Usage tracking (SQLite local)
+# =========================
+_DB_PATH = Path(__file__).parent / "usage.db"
+STATS_CODE = config("STATS_CODE", default="ver_stats")
+
+def _init_db():
+    with sqlite3.connect(_DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS usage_log (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts        TEXT    DEFAULT (datetime('now', 'localtime')),
+                course_h  TEXT
+            )
+        """)
+
+def _log_usage(course_id: str):
+    _init_db()
+    course_h = hashlib.md5(course_id.encode()).hexdigest()[:8]
+    with sqlite3.connect(_DB_PATH) as conn:
+        conn.execute("INSERT INTO usage_log (course_h) VALUES (?)", (course_h,))
+
+def _get_stats() -> dict:
+    _init_db()
+    with sqlite3.connect(_DB_PATH) as conn:
+        total   = conn.execute("SELECT COUNT(*) FROM usage_log").fetchone()[0]
+        today   = conn.execute("SELECT COUNT(*) FROM usage_log WHERE date(ts) = date('now', 'localtime')").fetchone()[0]
+        week    = conn.execute("SELECT COUNT(*) FROM usage_log WHERE ts >= datetime('now', 'localtime', '-7 days')").fetchone()[0]
+        month   = conn.execute("SELECT COUNT(*) FROM usage_log WHERE ts >= datetime('now', 'localtime', '-30 days')").fetchone()[0]
+        recent  = conn.execute("SELECT ts FROM usage_log ORDER BY id DESC LIMIT 15").fetchall()
+        by_day  = conn.execute("""
+            SELECT date(ts) as dia, COUNT(*) as usos
+            FROM usage_log
+            WHERE ts >= datetime('now', 'localtime', '-30 days')
+            GROUP BY dia ORDER BY dia DESC
+        """).fetchall()
+    return {"total": total, "today": today, "week": week, "month": month,
+            "recent": [r[0] for r in recent], "by_day": by_day}
+
+
+# =========================
 # UI
 # =========================
 # st.title("🧑🏻‍💻 Revisador de asistencia semi automático")
@@ -525,9 +568,9 @@ st.info(
     "**¿Cómo usar?**\n\n"
     "1. Ingresa el **ID del curso** en Canvas.\n"
     "2. Sube el **CSV de asistencia** (exportado desde Canvas/Zoom).\n"
-    "3. Presiona **Procesar** — la app cruza los nombres automáticamente y genera la tabla con **P** (presente) y **A** (ausente).\n\n"
-    "💡 Activa **Solo asistencia** si quieres el resultado más rápido. "
-    "La tabla se puede copiar directo a Excel con **Ctrl+Shift+V** para mantener el formato."
+    "3. Presiona **Procesar** — la app cruza los nombres automáticamente y genera la tabla con **P** (presente) y **A** (ausente).\n"
+    "4. Para copiar la tabla a Excel manteniendo el formato, usa **Ctrl+Shift+V** al pegar.\n\n"
+    "💡 Activa **Solo asistencia** si quieres el resultado más rápido."
 )
 
 # c1, c2 = st.columns([2, 3])
@@ -549,12 +592,37 @@ solo_asistencia = st.checkbox("Solo asistencia (más rápido)", value=False)
 process = st.button("Procesar", type="primary", width='stretch')
 
 if process:
+    # --- Modo estadísticas ---
+    if course_id.strip() == STATS_CODE:
+        stats = _get_stats()
+        st.markdown("### 📊 Estadísticas de uso")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total usos", stats["total"])
+        c2.metric("Hoy", stats["today"])
+        c3.metric("Últimos 7 días", stats["week"])
+        c4.metric("Últimos 30 días", stats["month"])
+        if stats["by_day"]:
+            st.markdown("**Usos por día (últimos 30 días)**")
+            st.dataframe(
+                pd.DataFrame(stats["by_day"], columns=["Día", "Usos"]),
+                hide_index=True, width="stretch"
+            )
+        if stats["recent"]:
+            st.markdown("**Últimas 15 ejecuciones**")
+            st.dataframe(
+                pd.DataFrame(stats["recent"], columns=["Timestamp"]),
+                hide_index=True, width="stretch"
+            )
+        st.stop()
+
     if not course_id.strip():
         st.error("Debes ingresar el ID de curso.")
         st.stop()
     if uploaded is None:
         st.error("Debes subir un CSV.")
         st.stop()
+
+    _log_usage(course_id.strip())
 
     # Leer CSV
     try:
