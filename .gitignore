@@ -3,6 +3,7 @@ config.py
 .env
 *.env
 *.log
+tokens.db
 # Ignorar archivos de compilación o temporales
 *.pyc
 __pycache__/

@@ -6,6 +6,7 @@ import unicodedata
 import sqlite3
 import hashlib
 from pathlib import Path
+from contextlib import contextmanager
 from difflib import SequenceMatcher
 from collections import Counter
 from itertools import combinations
@@ -57,12 +58,98 @@ st.markdown(
 # Canvas config
 # =========================
 BASE_URL = config("URL")   # ej: "https://canvas.uautonoma.cl/api/v1"
-API_TOKEN = config("TOKEN")
 
-HEADERS = {
-    "Authorization": f"Bearer {API_TOKEN}",
-    "Content-Type": "application/json"
-}
+# =========================
+# Token store (SQLite local, NO versionado)
+# =========================
+# Los tokens viven en tokens.db, que está en .gitignore. El repo es público:
+# nunca guardar credenciales en usage.db (ese sí está versionado).
+# Se administran 100% desde el panel (UI) — no se siembran desde .env/secrets,
+# porque un token viejo revocado ahí quedaría ensuciando la lista para siempre.
+# Filesystem de Streamlit Cloud es efímero: si el contenedor reinicia, hay que
+# volver a pegar los tokens vigentes en el panel.
+_TOKENS_DB_PATH = Path(__file__).parent / "tokens.db"
+TOKENS_CODE = config("TOKENS_CODE", default="ver_tokens")
+
+# Códigos que significan "este token no sirve para esto" -> probar el siguiente.
+# 404 va incluido porque Canvas lo devuelve cuando el token es válido pero no
+# tiene permiso sobre el curso, que es justo el síntoma de un token de menor nivel.
+ROTATE_ON_STATUS = (401, 403, 404)
+
+@contextmanager
+def _tokens_db():
+    """`with sqlite3.connect(...)` hace commit pero no cierra: aquí sí cerramos,
+    porque get_tokens() se llama en cada petición y filtraría conexiones."""
+    conn = sqlite3.connect(_TOKENS_DB_PATH)
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+def _init_tokens_db():
+    with _tokens_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_tokens (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                label      TEXT NOT NULL,
+                token      TEXT NOT NULL UNIQUE,
+                added_at   TEXT DEFAULT (datetime('now', 'localtime')),
+                last_ok_at TEXT,
+                last_error TEXT,
+                fail_count INTEGER DEFAULT 0
+            )
+        """)
+
+def get_tokens() -> list[dict]:
+    """Tokens ordenados: primero el que funcionó más recientemente."""
+    _init_tokens_db()
+    with _tokens_db() as conn:
+        rows = conn.execute("""
+            SELECT id, label, token, added_at, last_ok_at, last_error, fail_count
+            FROM api_tokens
+            ORDER BY last_ok_at IS NULL, last_ok_at DESC, id ASC
+        """).fetchall()
+    cols = ["id", "label", "token", "added_at", "last_ok_at", "last_error", "fail_count"]
+    return [dict(zip(cols, r)) for r in rows]
+
+def add_token(label: str, token: str) -> tuple[bool, str]:
+    _init_tokens_db()
+    token = (token or "").strip()
+    label = (label or "").strip() or "sin nombre"
+    if not token:
+        return False, "El token no puede estar vacío."
+    try:
+        with _tokens_db() as conn:
+            conn.execute("INSERT INTO api_tokens (label, token) VALUES (?, ?)", (label, token))
+        return True, f"Token «{label}» agregado."
+    except sqlite3.IntegrityError:
+        return False, "Ese token ya está en la lista."
+
+def delete_token(token_id: int):
+    _init_tokens_db()
+    with _tokens_db() as conn:
+        conn.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
+
+def _mark_token_ok(token_id: int):
+    with _tokens_db() as conn:
+        conn.execute("""
+            UPDATE api_tokens
+            SET last_ok_at = datetime('now', 'localtime'), last_error = NULL, fail_count = 0
+            WHERE id = ?
+        """, (token_id,))
+
+def _mark_token_failed(token_id: int, error: str):
+    with _tokens_db() as conn:
+        conn.execute("""
+            UPDATE api_tokens
+            SET last_error = ?, fail_count = fail_count + 1
+            WHERE id = ?
+        """, (error, token_id))
+
+def mask_token(token: str) -> str:
+    token = token or ""
+    return f"…{token[-4:]}" if len(token) > 4 else "…"
 
 # =========================
 # Helpers: limpieza + similitud
@@ -149,36 +236,77 @@ def is_noise_name(s: str) -> bool:
 # Canvas request helper
 # =========================
 def canvas_request(session, method, endpoint, payload=None, paginated=False):
+    """
+    Ejecuta la petición probando los tokens disponibles en orden. Si un token
+    devuelve 401/403/404 (inválido, revocado o sin permiso sobre el recurso),
+    lo marca como fallido y reintenta con el siguiente.
+    """
     if not BASE_URL:
         raise ValueError("BASE_URL no está configurada (env URL).")
 
-    url = endpoint if endpoint.startswith("http") else f"{BASE_URL}{endpoint}"
-    results = []
-
-    try:
-        while url:
-            if payload is not None and method.upper() == "GET":
-                resp = session.request(method.upper(), url, params=payload, headers=HEADERS)
-            else:
-                resp = session.request(method.upper(), url, json=payload, headers=HEADERS)
-
-            if not resp.ok:
-                st.error(f"Error Canvas {resp.status_code}: {resp.text}")
-                return None
-
-            data = resp.json()
-
-            if paginated:
-                results.extend(data if isinstance(data, list) else [data])
-                url = resp.links.get("next", {}).get("url")
-            else:
-                return data
-
-        return results
-
-    except requests.exceptions.RequestException as e:
-        st.error(f"Excepción Canvas: {e}")
+    tokens = get_tokens()
+    if not tokens:
+        st.error(
+            f"No hay tokens configurados. Escribe «{TOKENS_CODE}» en el campo "
+            "**ID curso** y presiona Procesar para agregar uno."
+        )
         return None
+
+    start_url = endpoint if endpoint.startswith("http") else f"{BASE_URL}{endpoint}"
+    attempts = []
+
+    for tok in tokens:
+        headers = {
+            "Authorization": f"Bearer {tok['token']}",
+            "Content-Type": "application/json",
+        }
+        url = start_url
+        results = []
+        rotate = False
+
+        try:
+            while url:
+                if payload is not None and method.upper() == "GET":
+                    resp = session.request(method.upper(), url, params=payload, headers=headers)
+                else:
+                    resp = session.request(method.upper(), url, json=payload, headers=headers)
+
+                if resp.status_code in ROTATE_ON_STATUS:
+                    _mark_token_failed(tok["id"], f"HTTP {resp.status_code}")
+                    attempts.append(f"{tok['label']} ({mask_token(tok['token'])}) → HTTP {resp.status_code}")
+                    rotate = True
+                    break
+
+                if not resp.ok:
+                    # Error que no tiene que ver con el token: no rotamos.
+                    st.error(f"Error Canvas {resp.status_code}: {resp.text}")
+                    return None
+
+                data = resp.json()
+
+                if paginated:
+                    results.extend(data if isinstance(data, list) else [data])
+                    url = resp.links.get("next", {}).get("url")
+                else:
+                    _mark_token_ok(tok["id"])
+                    return data
+
+            if rotate:
+                continue
+
+            _mark_token_ok(tok["id"])
+            return results
+
+        except requests.exceptions.RequestException as e:
+            st.error(f"Excepción Canvas: {e}")
+            return None
+
+    st.error(
+        "Ningún token pudo completar la petición.\n\n"
+        + "\n".join(f"- {a}" for a in attempts)
+        + f"\n\nRevisa los tokens escribiendo «{TOKENS_CODE}» en **ID curso**."
+    )
+    return None
 
 # =========================
 # Canvas: estudiantes matriculados
@@ -560,6 +688,55 @@ def _get_stats() -> dict:
 
 
 # =========================
+# Panel de tokens
+# =========================
+def render_tokens_panel():
+    st.markdown("### 🔑 Tokens de Canvas")
+    st.caption(
+        "Se prueban de arriba hacia abajo; el que funcionó más recientemente queda primero. "
+        f"Si uno responde {', '.join(str(c) for c in ROTATE_ON_STATUS)}, se marca como fallido "
+        "y se reintenta con el siguiente."
+    )
+
+    with st.form("add_token_form", clear_on_submit=True):
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            new_label = st.text_input("Nombre", placeholder="Ej: cuenta admin 2026")
+        with c2:
+            new_token = st.text_input("Token", type="password", placeholder="Pega el token de Canvas")
+        if st.form_submit_button("Agregar token", type="primary"):
+            ok, msg = add_token(new_label, new_token)
+            (st.success if ok else st.error)(msg)
+
+    tokens = get_tokens()
+    if not tokens:
+        st.warning("No hay tokens cargados.")
+    else:
+        st.markdown(f"**{len(tokens)} token(s) disponibles**")
+        for tok in tokens:
+            c1, c2, c3, c4 = st.columns([2.2, 1.2, 2.4, 0.8])
+            c1.markdown(f"**{tok['label']}**  \n`{mask_token(tok['token'])}`")
+            c2.markdown(
+                "✅ OK" if tok["last_ok_at"] else ("⚠️ Falló" if tok["fail_count"] else "⏳ Sin usar")
+            )
+            detalle = []
+            if tok["last_ok_at"]:
+                detalle.append(f"Último OK: {tok['last_ok_at']}")
+            if tok["last_error"]:
+                detalle.append(f"Último error: {tok['last_error']} ({tok['fail_count']} fallos)")
+            detalle.append(f"Agregado: {tok['added_at']}")
+            c3.caption("  \n".join(detalle))
+            if c4.button("🗑", key=f"del_token_{tok['id']}", help="Eliminar este token"):
+                delete_token(tok["id"])
+                st.rerun()
+
+    st.divider()
+    if st.button("Cerrar panel"):
+        st.session_state["show_tokens"] = False
+        st.rerun()
+
+
+# =========================
 # UI
 # =========================
 # st.title("🧑🏻‍💻 Revisador de asistencia semi automático")
@@ -590,6 +767,14 @@ uploaded = st.file_uploader("CSV de asistencia", type=["csv"])
 
 solo_asistencia = st.checkbox("Solo asistencia (más rápido)", value=False)
 process = st.button("Procesar", type="primary", width='stretch')
+
+# --- Panel de tokens (código secreto en el campo ID curso) ---
+if process and course_id.strip() == TOKENS_CODE:
+    st.session_state["show_tokens"] = True
+
+if st.session_state.get("show_tokens"):
+    render_tokens_panel()
+    st.stop()
 
 if process:
     # --- Modo estadísticas ---
