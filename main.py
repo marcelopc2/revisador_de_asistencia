@@ -235,6 +235,12 @@ def is_noise_name(s: str) -> bool:
 # =========================
 # Canvas request helper
 # =========================
+class CanvasUnavailable(Exception):
+    """Ningún token pudo completar la petición. Se lanza (en vez de devolver
+    None) para que st.cache_data NO cachee el fallo: si solo devolviéramos un
+    DataFrame vacío, Streamlit lo guardaría en caché 5 minutos y un token
+    agregado después seguiría sin probarse hasta que la caché expirara."""
+
 def canvas_request(session, method, endpoint, payload=None, paginated=False):
     """
     Ejecuta la petición probando los tokens disponibles en orden. Si un token
@@ -246,11 +252,12 @@ def canvas_request(session, method, endpoint, payload=None, paginated=False):
 
     tokens = get_tokens()
     if not tokens:
-        st.error(
+        msg = (
             f"No hay tokens configurados. Escribe «{TOKENS_CODE}» en el campo "
             "**ID curso** y presiona Procesar para agregar uno."
         )
-        return None
+        st.error(msg)
+        raise CanvasUnavailable(msg)
 
     start_url = endpoint if endpoint.startswith("http") else f"{BASE_URL}{endpoint}"
     attempts = []
@@ -279,8 +286,9 @@ def canvas_request(session, method, endpoint, payload=None, paginated=False):
 
                 if not resp.ok:
                     # Error que no tiene que ver con el token: no rotamos.
-                    st.error(f"Error Canvas {resp.status_code}: {resp.text}")
-                    return None
+                    msg = f"Error Canvas {resp.status_code}: {resp.text}"
+                    st.error(msg)
+                    raise CanvasUnavailable(msg)
 
                 data = resp.json()
 
@@ -298,15 +306,17 @@ def canvas_request(session, method, endpoint, payload=None, paginated=False):
             return results
 
         except requests.exceptions.RequestException as e:
-            st.error(f"Excepción Canvas: {e}")
-            return None
+            msg = f"Excepción Canvas: {e}"
+            st.error(msg)
+            raise CanvasUnavailable(msg)
 
-    st.error(
+    msg = (
         "Ningún token pudo completar la petición.\n\n"
         + "\n".join(f"- {a}" for a in attempts)
         + f"\n\nRevisa los tokens escribiendo «{TOKENS_CODE}» en **ID curso**."
     )
-    return None
+    st.error(msg)
+    raise CanvasUnavailable(msg)
 
 # =========================
 # Canvas: estudiantes matriculados
@@ -321,8 +331,6 @@ def fetch_enrolled_students(course_id: str) -> pd.DataFrame:
             "include[]": ["user"]
         }
         data = canvas_request(session, "GET", f"/courses/{course_id}/enrollments", payload=payload, paginated=True)
-        if data is None:
-            return pd.DataFrame()
 
     rows = []
     for enr in data:
@@ -568,8 +576,6 @@ def fetch_student_activity(course_id: str) -> pd.DataFrame:
             "include[]": ["user"],
         }
         data = canvas_request(session, "GET", f"/courses/{course_id}/enrollments", payload=payload, paginated=True)
-        if data is None:
-            return pd.DataFrame()
 
     rows = []
     for enr in data:
@@ -716,8 +722,10 @@ def render_tokens_panel():
         for tok in tokens:
             c1, c2, c3, c4 = st.columns([2.2, 1.2, 2.4, 0.8])
             c1.markdown(f"**{tok['label']}**  \n`{mask_token(tok['token'])}`")
+            # last_error se limpia en cada éxito, así que revisarlo primero
+            # evita mostrar "OK" en un token que falló después de su último éxito.
             c2.markdown(
-                "✅ OK" if tok["last_ok_at"] else ("⚠️ Falló" if tok["fail_count"] else "⏳ Sin usar")
+                "⚠️ Falló" if tok["last_error"] else ("✅ OK" if tok["last_ok_at"] else "⏳ Sin usar")
             )
             detalle = []
             if tok["last_ok_at"]:
@@ -833,7 +841,10 @@ if process:
 
     # Canvas students
     with st.spinner("Consultando estudiantes matriculados en el curso..."):
-        students_df = fetch_enrolled_students(course_id.strip())
+        try:
+            students_df = fetch_enrolled_students(course_id.strip())
+        except CanvasUnavailable:
+            st.stop()
 
     if students_df.empty:
         st.error("No pude obtener estudiantes (o no hay estudiantes activos).")
@@ -957,16 +968,19 @@ if process:
     # =========================
     if not solo_asistencia:
         with st.spinner("Obteniendo datos de actividad y tareas del curso..."):
-            activity_df      = fetch_student_activity(course_id.strip())
-            assignments_list = fetch_course_assignments(course_id.strip())
+            try:
+                activity_df      = fetch_student_activity(course_id.strip())
+                assignments_list = fetch_course_assignments(course_id.strip())
 
-            a_foro   = find_assignment_by_keywords(assignments_list, ["foro"])
-            a_equipo = find_assignment_by_keywords(assignments_list, ["equipo"])
-            a_final  = find_assignment_by_keywords(assignments_list, ["final"], exclude=["equipo"])
+                a_foro   = find_assignment_by_keywords(assignments_list, ["foro"])
+                a_equipo = find_assignment_by_keywords(assignments_list, ["equipo"])
+                a_final  = find_assignment_by_keywords(assignments_list, ["final"], exclude=["equipo"])
 
-            foro_ids   = fetch_assignment_submitters(course_id.strip(), a_foro["id"])   if a_foro   else frozenset()
-            equipo_ids = fetch_assignment_submitters(course_id.strip(), a_equipo["id"]) if a_equipo else frozenset()
-            final_ids  = fetch_assignment_submitters(course_id.strip(), a_final["id"])  if a_final  else frozenset()
+                foro_ids   = fetch_assignment_submitters(course_id.strip(), a_foro["id"])   if a_foro   else frozenset()
+                equipo_ids = fetch_assignment_submitters(course_id.strip(), a_equipo["id"]) if a_equipo else frozenset()
+                final_ids  = fetch_assignment_submitters(course_id.strip(), a_final["id"])  if a_final  else frozenset()
+            except CanvasUnavailable:
+                st.stop()
 
         uid_act = {}
         if not activity_df.empty:
