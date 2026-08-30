@@ -64,10 +64,12 @@ BASE_URL = config("URL")   # ej: "https://canvas.uautonoma.cl/api/v1"
 # =========================
 # Los tokens viven en tokens.db, que está en .gitignore. El repo es público:
 # nunca guardar credenciales en usage.db (ese sí está versionado).
-# Se administran 100% desde el panel (UI) — no se siembran desde .env/secrets,
-# porque un token viejo revocado ahí quedaría ensuciando la lista para siempre.
-# Filesystem de Streamlit Cloud es efímero: si el contenedor reinicia, hay que
-# volver a pegar los tokens vigentes en el panel.
+#
+# El filesystem de Streamlit Cloud es efímero: tokens.db se pierde en cada
+# redeploy o cuando la app despierta tras dormir. Los Secrets, en cambio, viven
+# en la config de la plataforma y sobreviven. Por eso los tokens nombrados en
+# TOKEN_NAMES se resiembran desde Secrets cuando la DB aparece vacía.
+# El panel sigue sirviendo para agregar tokens extra y para eliminar.
 _TOKENS_DB_PATH = Path(__file__).parent / "tokens.db"
 TOKENS_CODE = config("TOKENS_CODE", default="ver_tokens")
 
@@ -75,6 +77,34 @@ TOKENS_CODE = config("TOKENS_CODE", default="ver_tokens")
 # 404 va incluido porque Canvas lo devuelve cuando el token es válido pero no
 # tiene permiso sobre el curso, que es justo el síntoma de un token de menor nivel.
 ROTATE_ON_STATUS = (401, 403, 404)
+
+def _read_secret(name: str) -> str:
+    """Lee un valor de los Secrets de Streamlit Cloud o del .env local.
+    st.secrets lanza si no existe secrets.toml (caso local), de ahí el try."""
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name]).strip()
+    except Exception:
+        pass
+    try:
+        return str(config(name, default="")).strip()
+    except Exception:
+        return ""
+
+def _token_names() -> list[str]:
+    """Nombres de los Secrets que contienen tokens de Canvas.
+    Configurable con TOKEN_NAMES si algún día agregas o renombras cuentas."""
+    raw = _read_secret("TOKEN_NAMES") or "KARLA,MARCELO"
+    return [n.strip() for n in raw.split(",") if n.strip()]
+
+def _secret_tokens() -> list[tuple[str, str]]:
+    """[(nombre, token)] de los Secrets que efectivamente tienen valor."""
+    found = []
+    for name in _token_names():
+        val = _read_secret(name)
+        if val:
+            found.append((name, val))
+    return found
 
 @contextmanager
 def _tokens_db():
@@ -86,6 +116,23 @@ def _tokens_db():
         conn.commit()
     finally:
         conn.close()
+
+def _seed_tokens_from_secrets():
+    """Carga los tokens de Secrets que aún no estén en la DB.
+    seed_log recuerda cuáles ya se sembraron, para que si eliminas uno desde el
+    panel no reaparezca en el siguiente rerun. Tras un reinicio del contenedor
+    la DB entera se pierde, así que vuelven a cargarse: eso es lo que da la
+    persistencia que el disco efímero de Streamlit Cloud no ofrece."""
+    with _tokens_db() as conn:
+        ya = {r[0] for r in conn.execute("SELECT label FROM seed_log").fetchall()}
+        for label, token in _secret_tokens():
+            if label in ya:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO api_tokens (label, token) VALUES (?, ?)",
+                (label, token),
+            )
+            conn.execute("INSERT OR IGNORE INTO seed_log (label) VALUES (?)", (label,))
 
 def _init_tokens_db():
     with _tokens_db() as conn:
@@ -100,6 +147,13 @@ def _init_tokens_db():
                 fail_count INTEGER DEFAULT 0
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS seed_log (
+                label     TEXT PRIMARY KEY,
+                seeded_at TEXT DEFAULT (datetime('now', 'localtime'))
+            )
+        """)
+    _seed_tokens_from_secrets()
 
 def get_tokens() -> list[dict]:
     """Tokens ordenados: primero el que funcionó más recientemente."""
